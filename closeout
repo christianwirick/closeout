@@ -1,0 +1,934 @@
+#!/bin/bash
+
+# Gracefully close foreground GUI applications in the current macOS session.
+
+SAVE_MODE=0
+SAVE_TIMEOUT=60
+INCLUDE_FINDER=0
+PROGRAM_NAME=${0##*/}
+IS_TTY=0
+SWEEP_DEPTH=${CLOSEOUT_SWEEP_DEPTH:-0}
+QUIET_EMPTY=${CLOSEOUT_QUIET_EMPTY:-0}
+
+if [ -t 1 ]; then
+    IS_TTY=1
+fi
+
+if ! [[ "$SWEEP_DEPTH" =~ ^[0-9]+$ ]]; then
+    SWEEP_DEPTH=0
+fi
+
+if [ "$QUIET_EMPTY" != 1 ]; then
+    QUIET_EMPTY=0
+fi
+
+COLOR_RESET=""
+COLOR_PRIMARY=""
+COLOR_SECONDARY=""
+COLOR_INFO=""
+COLOR_SUCCESS=""
+COLOR_FORCE=""
+COLOR_ERROR=""
+COLOR_MUTED=""
+COLOR_FAINT=""
+
+if [ "$IS_TTY" -eq 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    COLOR_RESET=$'\033[0m'
+    COLOR_PRIMARY=$'\033[38;2;125;70;216m'
+    COLOR_SECONDARY=$'\033[38;2;146;99;217m'
+    COLOR_INFO=$'\033[38;2;0;147;184m'
+    COLOR_SUCCESS=$'\033[38;2;0;168;146m'
+    COLOR_FORCE=$'\033[38;2;192;224;33m'
+    COLOR_ERROR=$'\033[38;2;238;38;62m'
+    COLOR_MUTED=$'\033[38;2;167;169;180m'
+    COLOR_FAINT=$'\033[38;2;117;121;130m'
+fi
+
+opening_line() {
+    local count=$1
+    local noun=$2
+
+    if [ "$SWEEP_DEPTH" -gt 0 ]; then
+        if [ "$IS_TTY" -eq 1 ]; then
+            printf 'caught %s more %s opening' "$count" "$noun"
+        else
+            printf 'closing %s new %s' "$count" "$noun"
+        fi
+        return
+    fi
+
+    if [ "$IS_TTY" -eq 0 ]; then
+        printf 'closing %s %s' "$count" "$noun"
+        return
+    fi
+
+    case $((RANDOM % 8)) in
+        0) printf 'rounding up %s %s' "$count" "$noun" ;;
+        1) printf 'calling time on %s %s' "$count" "$noun" ;;
+        2) printf '%s %s made the closing list' "$count" "$noun" ;;
+        3) printf 'last call: %s %s' "$count" "$noun" ;;
+        4) printf 'clocking out %s %s' "$count" "$noun" ;;
+        5) printf 'closing shop · %s to go' "$count" ;;
+        6) printf '%s %s · one clean exit' "$count" "$noun" ;;
+        7) printf 'sending %s %s home' "$count" "$noun" ;;
+    esac
+}
+
+roast_line() {
+    local count=$1
+
+    case $((RANDOM % 8)) in
+        0) printf '%s apps open · your Dock filed for overtime' "$count" ;;
+        1) printf "%s apps · that's not multitasking, that's urban planning" "$count" ;;
+        2) printf '%s apps showed up · RAM has requested representation' "$count" ;;
+        3) printf '%s apps · your desktop became a group project' "$count" ;;
+        4) printf '%s apps open · even launchd thinks this is excessive' "$count" ;;
+        5) printf "%s apps · you didn't open a workflow, you opened a census" "$count" ;;
+        6) printf '%s apps · more active fronts than a weather map' "$count" ;;
+        7) printf '%s apps · closing time needed crowd control' "$count" ;;
+    esac
+}
+
+gentle_line() {
+    case $((RANDOM % 8)) in
+        0) printf 'starting gently' ;;
+        1) printf 'asking nicely' ;;
+        2) printf 'knocking first' ;;
+        3) printf 'manners first' ;;
+        4) printf 'easy does it' ;;
+        5) printf 'being polite' ;;
+        6) printf 'soft open' ;;
+        7) printf 'one clean ask' ;;
+    esac
+}
+
+term_line() {
+    case $((RANDOM % 8)) in
+        0) printf 'firmer now · TERM' ;;
+        1) printf 'politeness expired · TERM' ;;
+        2) printf 'TERM it is' ;;
+        3) printf "time's up · TERM" ;;
+        4) printf 'a firmer tap · TERM' ;;
+        5) printf 'escalating · TERM' ;;
+        6) printf 'raising my voice · TERM' ;;
+        7) printf 'second ask · TERM' ;;
+    esac
+}
+
+kill_line() {
+    local names=$1
+
+    case $((RANDOM % 8)) in
+        0) printf "%s didn't respond · finishing the job" "$names" ;;
+        1) printf "%s won't budge · no more asking" "$names" ;;
+        2) printf '%s ignored everything · last resort' "$names" ;;
+        3) printf 'out of patience with %s' "$names" ;;
+        4) printf '%s left no choice' "$names" ;;
+        5) printf 'nothing moved %s · ending it' "$names" ;;
+        6) printf '%s stayed put · not for long' "$names" ;;
+        7) printf '%s held out · held out wrong' "$names" ;;
+    esac
+}
+
+done_word() {
+    if [ "$IS_TTY" -eq 0 ]; then
+        printf 'done'
+        return
+    fi
+
+    case $((RANDOM % 8)) in
+        0) printf 'done' ;;
+        1) printf 'all clear' ;;
+        2) printf "that's a wrap" ;;
+        3) printf "desk's clean" ;;
+        4) printf 'all quiet now' ;;
+        5) printf 'closed up' ;;
+        6) printf 'clean slate' ;;
+        7) printf "shift's over" ;;
+    esac
+}
+
+nothing_line() {
+    if [ "$IS_TTY" -eq 0 ]; then
+        printf 'nothing to close'
+        return
+    fi
+
+    case $((RANDOM % 8)) in
+        0) printf 'nothing to close' ;;
+        1) printf 'already quiet' ;;
+        2) printf "everyone's gone home" ;;
+        3) printf 'empty floor' ;;
+        4) printf 'all clear already' ;;
+        5) printf 'no apps to chase' ;;
+        6) printf 'desk was already clean' ;;
+        7) printf 'nothing running · nice' ;;
+    esac
+}
+
+usage() {
+    cat <<EOF
+Usage: $PROGRAM_NAME [OPTIONS]
+
+Gracefully close foreground macOS applications, escalating only when needed.
+
+Options:
+  -f, --finder       Include Finder. macOS may relaunch it automatically.
+      --save [SEC]   Wait without sending signals (default: 60 seconds).
+  -h, --help         Show this help text.
+EOF
+}
+
+usage_error() {
+    if [ -n "${1:-}" ]; then
+        printf '%serror:%s %s\n\n' "$COLOR_ERROR" "$COLOR_RESET" "$1" >&2
+    fi
+    usage >&2
+    exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -f|--finder)
+            INCLUDE_FINDER=1
+            ;;
+        --save)
+            SAVE_MODE=1
+            if [ "$#" -gt 1 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+                if ! (( 10#$2 > 0 )); then
+                    usage_error "save timeout must be a positive integer"
+                fi
+                SAVE_TIMEOUT=$((10#$2))
+                shift
+            fi
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage_error "unknown option: $1"
+            ;;
+    esac
+    shift
+done
+
+RUN_STARTED=$(date +%s)
+
+ancestor_pids=" $$"
+ancestor_pid=$$
+while [ "$ancestor_pid" -gt 1 ]; do
+    parent_pid=$(ps -p "$ancestor_pid" -o ppid= 2>/dev/null)
+    parent_pid=${parent_pid//[[:space:]]/}
+    if ! [[ "$parent_pid" =~ ^[0-9]+$ ]]; then
+        break
+    fi
+    ancestor_pids="$ancestor_pids $parent_pid"
+    ancestor_pid=$parent_pid
+done
+ancestor_pids="$ancestor_pids "
+
+detection_output=$(osascript <<'APPLESCRIPT'
+tell application "System Events"
+    set outputText to ""
+    set appProcesses to every application process whose background only is false
+
+    repeat with appProcess in appProcesses
+        set appName to name of appProcess
+        set appPID to unix id of appProcess
+        set appBundleID to ""
+
+        try
+            set appBundleID to bundle identifier of appProcess
+            if appBundleID is missing value then set appBundleID to ""
+        end try
+
+        set outputText to outputText & appName & tab & appPID & tab & appBundleID & linefeed
+    end repeat
+
+    return outputText
+end tell
+APPLESCRIPT
+)
+detection_status=$?
+
+if [ "$detection_status" -ne 0 ]; then
+    printf '%s: unable to list foreground applications\n' "$PROGRAM_NAME" >&2
+    exit 1
+fi
+
+target_names=()
+target_pids=()
+target_bundles=()
+target_starts=()
+target_states=()
+target_receipts=()
+seen_pids=" "
+
+while IFS=$'\t' read -r app_name app_pid app_bundle; do
+    [ -n "$app_name" ] || continue
+    [[ "$app_pid" =~ ^[0-9]+$ ]] || continue
+
+    case "$app_bundle:$app_name" in
+        com.apple.finder:*|*:Finder)
+            if [ "$INCLUDE_FINDER" -eq 0 ]; then
+                continue
+            fi
+            ;;
+        com.apple.Terminal:*|com.apple.Passwords:*|*:Terminal|*:Passwords)
+            continue
+            ;;
+    esac
+
+    case "$ancestor_pids" in
+        *" $app_pid "*)
+            continue
+            ;;
+    esac
+
+    case "$seen_pids" in
+        *" $app_pid "*)
+            continue
+            ;;
+    esac
+    seen_pids="$seen_pids$app_pid "
+
+    target_names[${#target_names[@]}]=$app_name
+    target_pids[${#target_pids[@]}]=$app_pid
+    target_bundles[${#target_bundles[@]}]=$app_bundle
+    target_starts[${#target_starts[@]}]=""
+    target_states[${#target_states[@]}]=pending
+    target_receipts[${#target_receipts[@]}]=""
+done <<< "$detection_output"
+
+target_count=${#target_names[@]}
+if [ "$target_count" -eq 0 ]; then
+    if [ "$QUIET_EMPTY" -eq 1 ]; then
+        exit 0
+    fi
+    if [ "$IS_TTY" -eq 1 ]; then
+        printf '\n%s›%s %s%s%s\n' \
+            "$COLOR_PRIMARY" \
+            "$COLOR_RESET" \
+            "$COLOR_FAINT" \
+            "$(nothing_line)" \
+            "$COLOR_RESET"
+    else
+        nothing_line
+        printf '\n'
+    fi
+    exit 0
+fi
+
+COMPACT_MODE=0
+GRACE_SECONDS=5
+TERM_SECONDS=2
+
+if [ "$target_count" -gt 10 ]; then
+    COMPACT_MODE=1
+    GRACE_SECONDS=3
+    TERM_SECONDS=1
+fi
+
+if [ "$target_count" -gt 50 ]; then
+    GRACE_SECONDS=2
+fi
+
+snapshot_processes() {
+    local pid_list=""
+    local item_index=0
+    local snapshot_pid
+    local snapshot_start
+
+    SNAPSHOT_PIDS=()
+    SNAPSHOT_STARTS=()
+
+    while [ "$item_index" -lt "$target_count" ]; do
+        if [ -n "$pid_list" ]; then
+            pid_list="$pid_list,"
+        fi
+        pid_list="$pid_list${target_pids[$item_index]}"
+        item_index=$((item_index + 1))
+    done
+
+    [ -n "$pid_list" ] || return
+
+    while read -r snapshot_pid snapshot_start; do
+        [ -n "$snapshot_pid" ] || continue
+        SNAPSHOT_PIDS[${#SNAPSHOT_PIDS[@]}]=$snapshot_pid
+        SNAPSHOT_STARTS[${#SNAPSHOT_STARTS[@]}]=$snapshot_start
+    done < <(ps -p "$pid_list" -o pid= -o lstart= 2>/dev/null)
+}
+
+snapshot_start_for_pid() {
+    local wanted_pid=$1
+    local snapshot_index=0
+
+    while [ "$snapshot_index" -lt "${#SNAPSHOT_PIDS[@]}" ]; do
+        if [ "${SNAPSHOT_PIDS[$snapshot_index]}" = "$wanted_pid" ]; then
+            printf '%s' "${SNAPSHOT_STARTS[$snapshot_index]}"
+            return 0
+        fi
+        snapshot_index=$((snapshot_index + 1))
+    done
+    return 1
+}
+
+initialize_target_starts() {
+    local item_index=0
+    local initial_start
+
+    snapshot_processes
+    while [ "$item_index" -lt "$target_count" ]; do
+        initial_start=$(snapshot_start_for_pid "${target_pids[$item_index]}") || initial_start=""
+        target_starts[item_index]=$initial_start
+        item_index=$((item_index + 1))
+    done
+}
+
+process_matches() {
+    local pid=$1
+    local expected_start=$2
+    local current_start
+
+    [ -n "$expected_start" ] || return 1
+    current_start=$(snapshot_start_for_pid "$pid") || return 1
+    [ "$current_start" = "$expected_start" ]
+}
+
+applescript_string() {
+    local value=$1
+
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\n'/\\n}
+    printf '"%s"' "$value"
+}
+
+request_quits_batch() {
+    local item_index=0
+    local requested=0
+    local target
+    local statement
+    local script_args=()
+
+    script_args[${#script_args[@]}]=-e
+    script_args[${#script_args[@]}]='ignoring application responses'
+    snapshot_processes
+
+    while [ "$item_index" -lt "$target_count" ]; do
+        if process_matches "${target_pids[$item_index]}" "${target_starts[$item_index]}"; then
+            if [ -n "${target_bundles[$item_index]}" ]; then
+                target=$(applescript_string "${target_bundles[$item_index]}")
+                statement="tell application id $target to quit"
+            else
+                target=$(applescript_string "${target_names[$item_index]}")
+                statement="tell application $target to quit"
+            fi
+
+            script_args[${#script_args[@]}]=-e
+            script_args[${#script_args[@]}]=try
+            script_args[${#script_args[@]}]=-e
+            script_args[${#script_args[@]}]=$statement
+            script_args[${#script_args[@]}]=-e
+            script_args[${#script_args[@]}]='end try'
+            target_states[item_index]=waiting
+            requested=$((requested + 1))
+        else
+            target_states[item_index]=already-gone
+            already_gone=$((already_gone + 1))
+        fi
+        item_index=$((item_index + 1))
+    done
+
+    if [ "$requested" -gt 0 ]; then
+        script_args[${#script_args[@]}]=-e
+        script_args[${#script_args[@]}]='end ignoring'
+        osascript "${script_args[@]}" >/dev/null 2>&1
+    fi
+}
+
+elapsed_seconds() {
+    local now
+
+    now=$(date +%s)
+    printf '%s' "$((now - RUN_STARTED))"
+}
+
+count_state() {
+    local wanted_state=$1
+    local count=0
+    local item_index=0
+
+    while [ "$item_index" -lt "$target_count" ]; do
+        if [ "${target_states[$item_index]}" = "$wanted_state" ]; then
+            count=$((count + 1))
+        fi
+        item_index=$((item_index + 1))
+    done
+
+    printf '%s' "$count"
+}
+
+names_in_state() {
+    local wanted_state=$1
+    local names=""
+    local item_index=0
+
+    while [ "$item_index" -lt "$target_count" ]; do
+        if [ "${target_states[$item_index]}" = "$wanted_state" ]; then
+            if [ -n "$names" ]; then
+                names="$names · "
+            fi
+            names="$names${target_names[$item_index]}"
+        fi
+        item_index=$((item_index + 1))
+    done
+
+    printf '%s' "$names"
+}
+
+render_app_line() {
+    local item_index=$1
+    local state=${target_states[$item_index]}
+    local symbol="·"
+    local symbol_color=$COLOR_FAINT
+    local receipt=${target_receipts[$item_index]}
+
+    case "$state" in
+        quit-cleanly)
+            symbol="✓"
+            symbol_color=$COLOR_SUCCESS
+            ;;
+        term-sent|terminated|kill-pending)
+            symbol="~"
+            symbol_color=$COLOR_SECONDARY
+            ;;
+        force-killed)
+            symbol="◆"
+            symbol_color=$COLOR_FORCE
+            ;;
+        already-gone)
+            symbol="✓"
+            symbol_color=$COLOR_SUCCESS
+            receipt="gone"
+            ;;
+    esac
+
+    printf '  %s%s%s %-24s' \
+        "$symbol_color" \
+        "$symbol" \
+        "$COLOR_RESET" \
+        "${target_names[$item_index]}"
+
+    if [ -n "$receipt" ]; then
+        printf ' %s%s%s' "$COLOR_FAINT" "$receipt" "$COLOR_RESET"
+    fi
+    printf '\n'
+}
+
+tty_refresh_roster() {
+    local item_index=0
+
+    if [ "$COMPACT_MODE" -eq 1 ]; then
+        tty_clear_status
+        return
+    fi
+
+    printf '\r\033[2K'
+    printf '\033[%dA' "$target_count"
+    while [ "$item_index" -lt "$target_count" ]; do
+        printf '\r\033[2K'
+        render_app_line "$item_index"
+        item_index=$((item_index + 1))
+    done
+}
+
+tty_status() {
+    printf '\r\033[2K  %s%s%s' "$COLOR_INFO" "$1" "$COLOR_RESET"
+}
+
+tty_clear_status() {
+    printf '\r\033[2K'
+}
+
+print_header() {
+    local noun=apps
+    local item_index=0
+
+    if [ "$target_count" -eq 1 ]; then
+        noun=app
+    fi
+
+    if [ "$IS_TTY" -eq 1 ]; then
+        printf '\n%s›%s %s' \
+            "$COLOR_PRIMARY" \
+            "$COLOR_RESET" \
+            "$(opening_line "$target_count" "$noun")"
+        if [ "$INCLUDE_FINDER" -eq 1 ]; then
+            printf ' %s· finder included%s' "$COLOR_FAINT" "$COLOR_RESET"
+        fi
+        printf '\n'
+
+        if [ "$target_count" -gt 10 ]; then
+            printf '  %s%s%s\n' \
+                "$COLOR_MUTED" \
+                "$(roast_line "$target_count")" \
+                "$COLOR_RESET"
+        fi
+        printf '\n'
+
+        if [ "$COMPACT_MODE" -eq 0 ]; then
+            while [ "$item_index" -lt "$target_count" ]; do
+                render_app_line "$item_index"
+                item_index=$((item_index + 1))
+            done
+        fi
+    else
+        opening_line "$target_count" "$noun"
+        if [ "$INCLUDE_FINDER" -eq 1 ]; then
+            printf ' · finder included'
+        fi
+        printf '\n'
+    fi
+}
+
+check_clean_quits() {
+    local item_index=0
+    ROSTER_CHANGED=0
+    snapshot_processes
+
+    while [ "$item_index" -lt "$target_count" ]; do
+        if [ "${target_states[$item_index]}" = waiting ] &&
+            ! process_matches "${target_pids[$item_index]}" "${target_starts[$item_index]}"; then
+            target_states[item_index]=quit-cleanly
+            quit_cleanly=$((quit_cleanly + 1))
+            ROSTER_CHANGED=1
+        fi
+        item_index=$((item_index + 1))
+    done
+}
+
+check_term_results() {
+    local item_index=0
+    ROSTER_CHANGED=0
+    snapshot_processes
+
+    while [ "$item_index" -lt "$target_count" ]; do
+        if [ "${target_states[$item_index]}" = term-sent ] &&
+            ! process_matches "${target_pids[$item_index]}" "${target_starts[$item_index]}"; then
+            target_states[item_index]=terminated
+            terminated=$((terminated + 1))
+            ROSTER_CHANGED=1
+        fi
+        item_index=$((item_index + 1))
+    done
+}
+
+print_plain_receipts() {
+    local item_index=0
+
+    while [ "$item_index" -lt "$target_count" ]; do
+        case "${target_states[$item_index]}" in
+            quit-cleanly) printf 'quit\t%s\n' "${target_names[$item_index]}" ;;
+            terminated) printf 'term\t%s\n' "${target_names[$item_index]}" ;;
+            force-killed) printf 'kill\t%s\n' "${target_names[$item_index]}" ;;
+            already-gone) printf 'gone\t%s\n' "${target_names[$item_index]}" ;;
+        esac
+        item_index=$((item_index + 1))
+    done
+}
+
+finish_successfully() {
+    local elapsed
+    local finish_word
+    local item_index=0
+    local receipt_count=0
+
+    elapsed=$(elapsed_seconds)
+
+    if [ "$IS_TTY" -eq 1 ]; then
+        if [ "$COMPACT_MODE" -eq 1 ]; then
+            tty_clear_status
+            printf '\n'
+            while [ "$item_index" -lt "$target_count" ]; do
+                case "${target_states[$item_index]}" in
+                    terminated|force-killed)
+                        receipt_count=$((receipt_count + 1))
+                        if [ "$receipt_count" -le 8 ]; then
+                            render_app_line "$item_index"
+                        fi
+                        ;;
+                esac
+                item_index=$((item_index + 1))
+            done
+            if [ "$receipt_count" -gt 8 ]; then
+                printf '  %s… +%d more escalated%s\n' \
+                    "$COLOR_FAINT" "$((receipt_count - 8))" "$COLOR_RESET"
+            fi
+            if [ "$receipt_count" -gt 0 ]; then
+                printf '\n'
+            fi
+        else
+            tty_refresh_roster
+            tty_clear_status
+            printf '\n'
+        fi
+        finish_word=$(done_word)
+        printf '\n%s%s%s' "$COLOR_PRIMARY" "$finish_word" "$COLOR_RESET"
+        if [ "$quit_cleanly" -gt 0 ]; then
+            printf ' %s·%s %s%d quit%s' \
+                "$COLOR_FAINT" "$COLOR_RESET" \
+                "$COLOR_SUCCESS" "$quit_cleanly" "$COLOR_RESET"
+        fi
+        if [ "$terminated" -gt 0 ]; then
+            printf ' %s·%s %s%d term%s' \
+                "$COLOR_FAINT" "$COLOR_RESET" \
+                "$COLOR_SECONDARY" "$terminated" "$COLOR_RESET"
+        fi
+        if [ "$force_killed" -gt 0 ]; then
+            printf ' %s·%s %s%d kill%s' \
+                "$COLOR_FAINT" "$COLOR_RESET" \
+                "$COLOR_FORCE" "$force_killed" "$COLOR_RESET"
+        fi
+        if [ "$already_gone" -gt 0 ]; then
+            printf ' %s·%s %s%d gone%s' \
+                "$COLOR_FAINT" "$COLOR_RESET" \
+                "$COLOR_MUTED" "$already_gone" "$COLOR_RESET"
+        fi
+        printf ' %s· %ss%s\n' "$COLOR_FAINT" "$elapsed" "$COLOR_RESET"
+    else
+        print_plain_receipts
+        printf 'done quit=%d term=%d kill=%d gone=%d elapsed=%ss\n' \
+            "$quit_cleanly" \
+            "$terminated" \
+            "$force_killed" \
+            "$already_gone" \
+            "$elapsed"
+    fi
+}
+
+run_followup_sweep() {
+    local next_depth
+    local followup_args=()
+
+    if [ "$SAVE_MODE" -eq 1 ]; then
+        return 0
+    fi
+    if [ "$target_count" -le 10 ] && [ "$SWEEP_DEPTH" -eq 0 ]; then
+        return 0
+    fi
+    if [ "$SWEEP_DEPTH" -ge 3 ]; then
+        return 0
+    fi
+
+    next_depth=$((SWEEP_DEPTH + 1))
+    if [ "$INCLUDE_FINDER" -eq 1 ]; then
+        followup_args[${#followup_args[@]}]=-f
+    fi
+
+    CLOSEOUT_SWEEP_DEPTH=$next_depth \
+        CLOSEOUT_QUIET_EMPTY=1 \
+        "$0" "${followup_args[@]}"
+}
+
+initialize_target_starts
+print_header
+
+already_gone=0
+quit_cleanly=0
+terminated=0
+force_killed=0
+
+request_quits_batch
+
+if [ "$IS_TTY" -eq 1 ]; then
+    tty_refresh_roster
+fi
+
+if [ "$SAVE_MODE" -eq 1 ]; then
+    save_started=$(date +%s)
+
+    while :; do
+        check_clean_quits
+        if [ "$IS_TTY" -eq 1 ] && [ "$ROSTER_CHANGED" -eq 1 ]; then
+            tty_refresh_roster
+        fi
+
+        open_count=$(count_state waiting)
+        if [ "$open_count" -eq 0 ]; then
+            finish_successfully
+            exit 0
+        fi
+
+        now=$(date +%s)
+        remaining=$((SAVE_TIMEOUT - (now - save_started)))
+        if [ "$remaining" -le 0 ]; then
+            break
+        fi
+
+        if [ "$IS_TTY" -eq 1 ]; then
+            tty_status "save mode · ${remaining}s · $open_count open · nothing forced"
+        else
+            open_names=$(names_in_state waiting)
+            printf 'waiting remaining=%ss open=%s apps=%s\n' \
+                "$remaining" "$open_count" "$open_names"
+        fi
+
+        poll_delay=5
+        if [ "$remaining" -lt "$poll_delay" ]; then
+            poll_delay=$remaining
+        fi
+        sleep "$poll_delay"
+    done
+
+    check_clean_quits
+    open_count=$(count_state waiting)
+    if [ "$open_count" -eq 0 ]; then
+        finish_successfully
+        exit 0
+    fi
+
+    open_names=$(names_in_state waiting)
+    if [ "$IS_TTY" -eq 1 ]; then
+        if [ "$ROSTER_CHANGED" -eq 1 ]; then
+            tty_refresh_roster
+        fi
+        tty_clear_status
+        printf '\n\n%s›%s timeout %s·%s %s%s open%s %s· nothing forced%s\n' \
+            "$COLOR_PRIMARY" "$COLOR_RESET" \
+            "$COLOR_FAINT" "$COLOR_RESET" \
+            "$COLOR_SECONDARY" "$open_names" "$COLOR_RESET" \
+            "$COLOR_FAINT" "$COLOR_RESET"
+    else
+        printf 'timeout open=%s apps=%s forced=0\n' "$open_count" "$open_names"
+    fi
+    exit 1
+fi
+
+if [ "$IS_TTY" -eq 1 ]; then
+    gentle_text=$(gentle_line)
+    remaining=$GRACE_SECONDS
+
+    while [ "$remaining" -gt 0 ]; do
+        open_count=$(count_state waiting)
+        if [ "$open_count" -eq 0 ]; then
+            break
+        fi
+
+        tty_status "$gentle_text · ${remaining}s · $open_count open"
+        sleep 1
+        check_clean_quits
+        if [ "$ROSTER_CHANGED" -eq 1 ]; then
+            tty_refresh_roster
+        fi
+        remaining=$((remaining - 1))
+    done
+    check_clean_quits
+    if [ "$ROSTER_CHANGED" -eq 1 ]; then
+        tty_refresh_roster
+    fi
+    tty_clear_status
+else
+    sleep "$GRACE_SECONDS"
+    check_clean_quits
+fi
+
+index=0
+while [ "$index" -lt "$target_count" ]; do
+    if [ "${target_states[$index]}" = waiting ]; then
+        target_states[index]=term-pending
+    fi
+    index=$((index + 1))
+done
+
+term_sent=0
+snapshot_processes
+term_elapsed=$(elapsed_seconds)
+index=0
+while [ "$index" -lt "$target_count" ]; do
+    if [ "${target_states[$index]}" = term-pending ]; then
+        if process_matches "${target_pids[$index]}" "${target_starts[$index]}"; then
+            target_receipts[index]="term · ${term_elapsed}s"
+            kill -TERM "${target_pids[$index]}" 2>/dev/null
+            target_states[index]=term-sent
+            term_sent=$((term_sent + 1))
+        else
+            target_states[index]=quit-cleanly
+            quit_cleanly=$((quit_cleanly + 1))
+        fi
+    fi
+    index=$((index + 1))
+done
+
+if [ "$term_sent" -gt 0 ]; then
+    if [ "$IS_TTY" -eq 1 ]; then
+        tty_refresh_roster
+        term_text=$(term_line)
+        remaining=$TERM_SECONDS
+
+        while [ "$remaining" -gt 0 ]; do
+            open_count=$(count_state term-sent)
+            if [ "$open_count" -eq 0 ]; then
+                break
+            fi
+
+            tty_status "$term_text · ${remaining}s · $open_count open"
+            sleep 1
+            check_term_results
+            if [ "$ROSTER_CHANGED" -eq 1 ]; then
+                tty_refresh_roster
+            fi
+            remaining=$((remaining - 1))
+        done
+        check_term_results
+        if [ "$ROSTER_CHANGED" -eq 1 ]; then
+            tty_refresh_roster
+        fi
+        tty_clear_status
+    else
+        sleep "$TERM_SECONDS"
+        check_term_results
+    fi
+fi
+
+index=0
+snapshot_processes
+kill_elapsed=$(elapsed_seconds)
+while [ "$index" -lt "$target_count" ]; do
+    if [ "${target_states[$index]}" = term-sent ]; then
+        target_states[index]=kill-pending
+    fi
+    index=$((index + 1))
+done
+
+kill_pending=$(count_state kill-pending)
+if [ "$kill_pending" -gt 0 ] && [ "$IS_TTY" -eq 1 ]; then
+    if [ "$COMPACT_MODE" -eq 1 ]; then
+        kill_subject="$kill_pending apps"
+    else
+        kill_subject=$(names_in_state kill-pending)
+    fi
+    tty_status "$(kill_line "$kill_subject")"
+fi
+
+index=0
+while [ "$index" -lt "$target_count" ]; do
+    if [ "${target_states[$index]}" = kill-pending ]; then
+        if process_matches "${target_pids[$index]}" "${target_starts[$index]}"; then
+            target_receipts[index]="kill · ${kill_elapsed}s"
+            kill -KILL "${target_pids[$index]}" 2>/dev/null
+            target_states[index]=force-killed
+            force_killed=$((force_killed + 1))
+        else
+            target_states[index]=terminated
+            terminated=$((terminated + 1))
+        fi
+    fi
+    index=$((index + 1))
+done
+
+finish_successfully
+run_followup_sweep
+exit $?
