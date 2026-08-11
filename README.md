@@ -1,8 +1,8 @@
 # closeout
 
-`closeout` is a small macOS command that clears foreground GUI applications without treating every app like a nail.
+The off switch for your workday.
 
-It asks apps to quit cleanly, waits briefly, sends `SIGTERM` only to holdouts, and reserves `SIGKILL` for the final fallback. Large sessions use shorter windows, batched process checks, and a compact terminal interface.
+One command gracefully closes the apps on your Mac.
 
 ## Features
 
