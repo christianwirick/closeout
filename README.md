@@ -2,7 +2,7 @@
 
 The off switch for your workday.
 
-One command gracefully closes the apps on your Mac.
+One command gracefully closes all apps on your Mac.
 
 ## Features
 
